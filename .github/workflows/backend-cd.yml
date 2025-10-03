@@ -102,9 +102,29 @@ jobs:
           kubectl set image deploy/order-service-w08e1   order-service-container="${REGISTRY_LOGIN_SERVER}/order_service:${IMAGE_TAG}"   --record=true || true
 
           echo "Waiting for product-service rollout..."
-          kubectl rollout status deploy/product-service-w08e1 --timeout=180s || exit 1
+          kubectl rollout status deploy/product-service-w08e1 --timeout=600s || exit 1
           echo "Waiting for order-service rollout..."
-          kubectl rollout status deploy/order-service-w08e1 --timeout=180s || exit 1
+          kubectl rollout status deploy/order-service-w08e1 --timeout=600s || exit 1
+
+      - name: Debug (product-service) on failure
+        if: failure()
+        run: |
+          echo "=== Deployments ==="
+          kubectl get deploy -o wide
+          echo "=== ReplicaSets (product) ==="
+          kubectl get rs -l app=product-service -o wide || true
+          echo "=== Pods (product) ==="
+          kubectl get pods -l app=product-service -o wide || true
+          echo "=== Describe deployment ==="
+          kubectl describe deploy/product-service-w08e1 || true
+          echo "=== Describe pods ==="
+          for p in $(kubectl get pods -l app=product-service -o name); do
+            kubectl describe "$p" || true
+            echo "--- Logs $p ---"
+            kubectl logs "$p" --all-containers --tail=200 || true
+          done
+          echo "=== Recent events ==="
+          kubectl get events --sort-by=.lastTimestamp | tail -n 200 || true
 
       - name: Capture LoadBalancer IPs
         id: capture
