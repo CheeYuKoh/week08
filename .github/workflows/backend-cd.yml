@@ -3,8 +3,8 @@ name: CD - Deploy Backend (then Frontend)
 on:
   workflow_dispatch:
     inputs:
-      aks_cluster_name: { description: 'AKS name', required: true }
-      aks_resource_group: { description: 'RG name', required: true }
+      aks_cluster_name:  { description: 'AKS name', required: true }
+      aks_resource_group:{ description: 'RG name', required: true }
   workflow_run:
     workflows: ["CI - Test, Build & Push (Backend + Frontend)"]
     types: [completed]
@@ -12,7 +12,8 @@ on:
 
 env:
   REGISTRY_LOGIN_SERVER: ${{ secrets.AZURE_ACR_LOGIN_SERVER }}
-  IMAGE_TAG: ${{ github.event.workflow_run?.outputs.image_tag || github.sha }}
+  # If triggered by workflow_run, use that run's head SHA; otherwise use this workflow's SHA
+  IMAGE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
 permissions:
   id-token: write
@@ -24,12 +25,14 @@ concurrency:
 
 jobs:
   deploy_backend:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    # Guard access to workflow_run fields when event isn't workflow_run
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
     environment: Production
+
     outputs:
       PRODUCT_API_IP: ${{ steps.capture.outputs.product_ip }}
-      ORDER_API_IP: ${{ steps.capture.outputs.order_ip }}
+      ORDER_API_IP:   ${{ steps.capture.outputs.order_ip }}
 
     steps:
       - uses: actions/checkout@v4
@@ -56,7 +59,7 @@ jobs:
             --name "${{ github.event.inputs.aks_cluster_name || secrets.AKS_NAME }}" \
             --attach-acr "${{ secrets.AZURE_ACR_NAME }}"
 
-      - name: Deploy Config & Databases
+      - name: Deploy Backend Infrastructure
         working-directory: k8s
         run: |
           kubectl apply -f configmaps.yaml
@@ -64,15 +67,13 @@ jobs:
           kubectl apply -f product-db.yaml
           kubectl apply -f order-db.yaml
 
-      - name: Deploy Services with pinned images
+      - name: Deploy Backend Microservices (pin image tags)
         working-directory: k8s
         run: |
-          # Patch images to the exact CI-built tag
-          kubectl set image deploy/product-service-w08e1 product-service-container="${{ env.REGISTRY_LOGIN_SERVER }}/product_service:${{ env.IMAGE_TAG }}" --record=true || true
-          kubectl set image deploy/order-service-w08e1 order-service-container="${{ env.REGISTRY_LOGIN_SERVER }}/order_service:${{ env.IMAGE_TAG }}" --record=true || true
-          # If first time apply:
           kubectl apply -f product-service.yaml
           kubectl apply -f order-service.yaml
+          kubectl set image deploy/product-service-w08e1 product-service-container="${{ env.REGISTRY_LOGIN_SERVER }}/product_service:${{ env.IMAGE_TAG }}" --record=true
+          kubectl set image deploy/order-service-w08e1 order-service-container="${{ env.REGISTRY_LOGIN_SERVER }}/order_service:${{ env.IMAGE_TAG }}" --record=true
 
       - name: Wait for LoadBalancer IPs
         id: capture
@@ -97,3 +98,5 @@ jobs:
       order_api_ip:   "http://${{ needs.deploy_backend.outputs.ORDER_API_IP }}:8001"
       aks_cluster_name: ${{ github.event.inputs.aks_cluster_name || secrets.AKS_NAME }}
       aks_resource_group: ${{ github.event.inputs.aks_resource_group || secrets.AKS_RG }}
+      image_tag: ${{ env.IMAGE_TAG }}
+    secrets: inherit
