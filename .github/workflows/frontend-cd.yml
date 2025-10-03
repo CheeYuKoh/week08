@@ -42,11 +42,9 @@ on:
         type: string
 
 # Required secrets:
-# - AZURE_CLIENT_ID
-# - AZURE_TENANT_ID
-# - AZURE_SUBSCRIPTION_ID
-# - AZURE_ACR_NAME             (e.g., myregistry)
-# - AZURE_ACR_LOGIN_SERVER     (e.g., myregistry.azurecr.io)
+# - AZURE_CREDENTIALS              (if using SP JSON; keep @v1 login)
+# - AZURE_ACR_NAME                 (e.g., myregistry)
+# - AZURE_ACR_LOGIN_SERVER         (e.g., myregistry.azurecr.io)
 
 permissions:
   id-token: write
@@ -55,7 +53,6 @@ permissions:
 env:
   REGISTRY_NAME: ${{ secrets.AZURE_ACR_NAME }}
   REGISTRY_LOGIN_SERVER: ${{ secrets.AZURE_ACR_LOGIN_SERVER }}
-  # default to the commit SHA when not provided via inputs
   IMAGE_TAG: ${{ inputs.image_tag != '' && inputs.image_tag || github.sha }}
   DOCKER_BUILDKIT: 1
 
@@ -72,13 +69,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Azure login using a Service Principal secret
       - name: Azure Login
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # ACR login
       - name: Login to Azure Container Registry
         run: az acr login --name ${{ env.REGISTRY_NAME }}
 
@@ -87,9 +82,16 @@ jobs:
           echo "Injecting API URLs into frontend/main.js..."
           sed -i "s|_PRODUCT_API_URL_|${{ inputs.product_api_ip }}|g" frontend/main.js
           sed -i "s|_ORDER_API_URL_|${{ inputs.order_api_ip }}|g" frontend/main.js
-          echo "--- Modified frontend/main.js ---"
+          echo "--- Modified frontend/main.js (first 120 lines) ---"
           sed -n '1,120p' frontend/main.js
           echo "---------------------------------"
+
+      # Buildx with docker-container driver so registry cache works
+      - name: Set up Docker Buildx (container driver)
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+          install: true
 
       - name: Build & Push Frontend Image (tagged)
         uses: docker/build-push-action@v6
@@ -100,11 +102,7 @@ jobs:
             ${{ env.REGISTRY_LOGIN_SERVER }}/frontend:latest
             ${{ env.REGISTRY_LOGIN_SERVER }}/frontend:${{ env.IMAGE_TAG }}
           cache-from: type=registry,ref=${{ env.REGISTRY_LOGIN_SERVER }}/frontend:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY_LOGIN_SERVER }}/frontend:buildcache,mode=max
-
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+          cache-to:   type=registry,ref=${{ env.REGISTRY_LOGIN_SERVER }}/frontend:buildcache,mode=max
 
       - name: Set AKS context
         uses: azure/aks-set-context@v3
@@ -115,7 +113,6 @@ jobs:
       - name: Deploy Frontend to AKS (apply manifests)
         working-directory: k8s
         run: |
-          # Ensure k8s/frontend.yaml references the correct Deployment and container names
           kubectl apply -f frontend.yaml
 
       - name: Pin Frontend image to built tag (dynamic)
@@ -124,14 +121,12 @@ jobs:
           IMAGE_TAG: ${{ env.IMAGE_TAG }}
         run: |
           set -e
-
           echo "Looking for a frontend Deployment via label 'app=frontend'..."
           DEPLOY=$(kubectl get deploy -l app=frontend -o jsonpath='{.items[0].metadata.name}')
-
           if [ -z "$DEPLOY" ]; then
             echo "No deployment found with label app=frontend. Listing deployments:"
             kubectl get deploy -o wide
-            echo "If you don't use that label, either add it to your Deployment or hardcode the name below."
+            echo "Add label 'app: frontend' to your Deployment, or hardcode the name here."
             exit 1
           fi
 
@@ -144,10 +139,8 @@ jobs:
 
           echo "Patching: $DEPLOY / $CONTAINER -> ${REGISTRY_LOGIN_SERVER}/frontend:${IMAGE_TAG}"
           kubectl set image deploy/"$DEPLOY" "$CONTAINER"="${REGISTRY_LOGIN_SERVER}/frontend:${IMAGE_TAG}" --record=true
-
           echo "Waiting for rollout..."
           kubectl rollout status deploy/"$DEPLOY" --timeout=600s
-
 
       - name: Logout from Azure
         if: always()
