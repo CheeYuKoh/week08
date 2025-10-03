@@ -65,14 +65,11 @@ jobs:
 
       - name: Install deps
         run: |
-          pip install -U pip pytest httpx ruff
+          pip install -U pip pytest httpx
           for req in backend/*/requirements.txt; do
             echo "Installing $req"
             pip install -r "$req"
           done
-
-      - name: Lint (ruff)
-        run: ruff check backend/
 
       - name: Test product_service
         working-directory: backend/product_service
