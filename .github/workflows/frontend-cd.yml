@@ -91,9 +91,6 @@ jobs:
           sed -n '1,120p' frontend/main.js
           echo "---------------------------------"
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Build & Push Frontend Image (tagged)
         uses: docker/build-push-action@v6
         with:
@@ -104,6 +101,10 @@ jobs:
             ${{ env.REGISTRY_LOGIN_SERVER }}/frontend:${{ env.IMAGE_TAG }}
           cache-from: type=registry,ref=${{ env.REGISTRY_LOGIN_SERVER }}/frontend:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY_LOGIN_SERVER }}/frontend:buildcache,mode=max
+
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Set AKS context
         uses: azure/aks-set-context@v3
@@ -117,13 +118,36 @@ jobs:
           # Ensure k8s/frontend.yaml references the correct Deployment and container names
           kubectl apply -f frontend.yaml
 
-      - name: Pin Frontend image to built tag
+      - name: Pin Frontend image to built tag (dynamic)
+        env:
+          REGISTRY_LOGIN_SERVER: ${{ secrets.AZURE_ACR_LOGIN_SERVER }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
         run: |
-          # Adjust Deployment and container names if different in your YAML
-          # Example assumes: kind: Deployment, metadata.name: frontend-w08e1, container name: frontend-container
-          kubectl set image deployment/frontend-w08e1 frontend-container=${{ env.REGISTRY_LOGIN_SERVER }}/frontend:${{ env.IMAGE_TAG }} --record=true
+          set -e
+
+          echo "Looking for a frontend Deployment via label 'app=frontend'..."
+          DEPLOY=$(kubectl get deploy -l app=frontend -o jsonpath='{.items[0].metadata.name}')
+
+          if [ -z "$DEPLOY" ]; then
+            echo "No deployment found with label app=frontend. Listing deployments:"
+            kubectl get deploy -o wide
+            echo "If you don't use that label, either add it to your Deployment or hardcode the name below."
+            exit 1
+          fi
+
+          CONTAINER=$(kubectl get deploy "$DEPLOY" -o jsonpath='{.spec.template.spec.containers[0].name}')
+          if [ -z "$CONTAINER" ]; then
+            echo "Could not detect container name in $DEPLOY"
+            kubectl get deploy "$DEPLOY" -o yaml
+            exit 1
+          fi
+
+          echo "Patching: $DEPLOY / $CONTAINER -> ${REGISTRY_LOGIN_SERVER}/frontend:${IMAGE_TAG}"
+          kubectl set image deploy/"$DEPLOY" "$CONTAINER"="${REGISTRY_LOGIN_SERVER}/frontend:${IMAGE_TAG}" --record=true
+
           echo "Waiting for rollout..."
-          kubectl rollout status deployment/frontend-w08e1 --timeout=180s
+          kubectl rollout status deploy/"$DEPLOY" --timeout=600s
+
 
       - name: Logout from Azure
         if: always()
