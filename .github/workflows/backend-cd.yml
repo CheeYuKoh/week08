@@ -3,8 +3,8 @@ name: CD - Deploy Backend (then Frontend)
 on:
   workflow_dispatch:
     inputs:
-      aks_cluster_name:   { description: 'AKS name', required: true }
-      aks_resource_group: { description: 'RG name',  required: true }
+      aks_cluster_name:   { description: 'AKS name', required: false, default: '' }
+      aks_resource_group: { description: 'RG name',  required: false, default: '' }
       image_tag:          { description: 'Image tag to deploy (optional)', required: false, default: '' }
   workflow_run:
     workflows: ["CI - Test, Build & Push (Backend + Frontend)"]
@@ -30,14 +30,13 @@ jobs:
       PRODUCT_API_IP: ${{ steps.capture.outputs.product_ip }}
       ORDER_API_IP:   ${{ steps.capture.outputs.order_ip }}
       IMAGE_TAG:      ${{ steps.compute_tag.outputs.val }}
+      AKS_NAME:       ${{ steps.compute_aks.outputs.name }}
+      AKS_RG:         ${{ steps.compute_aks.outputs.rg }}
 
     steps:
       - uses: actions/checkout@v4
 
-      # Decide which image tag to deploy:
-      # - If triggered by workflow_run (CI finished), use the CI run's head SHA.
-      # - Else if manual and image_tag input provided, use it.
-      # - Else fall back to the current SHA.
+      # Decide which image tag to deploy
       - name: Compute IMAGE_TAG
         id: compute_tag
         run: |
@@ -48,26 +47,39 @@ jobs:
           else
             echo "val=${{ github.sha }}" >> $GITHUB_OUTPUT
           fi
-          echo "IMAGE_TAG chosen: $(cat $GITHUB_OUTPUT)"
 
-      # Azure login using a Service Principal secret
+      # Compute AKS name/RG (inputs override secrets)
+      - name: Compute AKS values
+        id: compute_aks
+        run: |
+          NAME="${{ github.event.inputs.aks_cluster_name }}"
+          RG="${{ github.event.inputs.aks_resource_group }}"
+          if [ -z "$NAME" ]; then NAME="${{ secrets.AKS_NAME }}"; fi
+          if [ -z "$RG" ]; then RG="${{ secrets.AKS_RG }}"; fi
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+          echo "rg=$RG" >> $GITHUB_OUTPUT
+          echo "AKS_NAME=$NAME" >> $GITHUB_ENV
+          echo "AKS_RG=$RG" >> $GITHUB_ENV
+
+      # Azure login (use v1 + AZURE_CREDENTIALS if you haven't set up OIDC yet)
       - name: Azure Login
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+          enable-AzPSSession: true
 
       - name: Set AKS context
         run: |
           az aks get-credentials \
-            --resource-group "${{ github.event.inputs.aks_resource_group || secrets.AKS_RG }}" \
-            --name "${{ github.event.inputs.aks_cluster_name || secrets.AKS_NAME }}" \
+            --resource-group "$AKS_RG" \
+            --name "$AKS_NAME" \
             --overwrite-existing
 
       - name: Attach ACR
         run: |
           az aks update \
-            --resource-group "${{ github.event.inputs.aks_resource_group || secrets.AKS_RG }}" \
-            --name "${{ github.event.inputs.aks_cluster_name || secrets.AKS_NAME }}" \
+            --resource-group "$AKS_RG" \
+            --name "$AKS_NAME" \
             --attach-acr "${{ secrets.AZURE_ACR_NAME }}"
 
       - name: Deploy Config & Databases
@@ -83,11 +95,9 @@ jobs:
           REGISTRY_LOGIN_SERVER: ${{ secrets.AZURE_ACR_LOGIN_SERVER }}
           IMAGE_TAG: ${{ steps.compute_tag.outputs.val }}
         run: |
-          # First apply manifests (creates if not exist)
           kubectl apply -f k8s/product-service.yaml
           kubectl apply -f k8s/order-service.yaml
 
-          # Then pin images to the EXACT tag produced by CI
           kubectl set image deploy/product-service-w08e1 product-service-container="${REGISTRY_LOGIN_SERVER}/product_service:${IMAGE_TAG}" --record=true || true
           kubectl set image deploy/order-service-w08e1   order-service-container="${REGISTRY_LOGIN_SERVER}/order_service:${IMAGE_TAG}"   --record=true || true
 
@@ -115,9 +125,9 @@ jobs:
     needs: deploy_backend
     uses: ./.github/workflows/frontend-cd.yml
     with:
-      product_api_ip:  "http://${{ needs.deploy_backend.outputs.PRODUCT_API_IP }}:8000"
-      order_api_ip:    "http://${{ needs.deploy_backend.outputs.ORDER_API_IP }}:8001"
-      aks_cluster_name: ${{ github.event.inputs.aks_cluster_name || secrets.AKS_NAME }}
-      aks_resource_group: ${{ github.event.inputs.aks_resource_group || secrets.AKS_RG }}
+      product_api_ip:   "http://${{ needs.deploy_backend.outputs.PRODUCT_API_IP }}:8000"
+      order_api_ip:     "http://${{ needs.deploy_backend.outputs.ORDER_API_IP }}:8001"
+      aks_cluster_name: ${{ needs.deploy_backend.outputs.AKS_NAME }}
+      aks_resource_group: ${{ needs.deploy_backend.outputs.AKS_RG }}
       image_tag:        ${{ needs.deploy_backend.outputs.IMAGE_TAG }}
     secrets: inherit
