@@ -51,7 +51,6 @@ on:
 permissions:
   id-token: write
   contents: read
-  packages: write
 
 env:
   REGISTRY_NAME: ${{ secrets.AZURE_ACR_NAME }}
