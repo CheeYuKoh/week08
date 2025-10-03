@@ -48,6 +48,26 @@ jobs:
             echo "val=${{ github.sha }}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Ensure image tag exists (fallback to latest)
+        id: tag_check
+        env:
+          REGISTRY_NAME: ${{ secrets.AZURE_ACR_NAME }}               # e.g. cyweek09acr
+          IMAGE_TAG: ${{ steps.compute_tag.outputs.val }}
+        run: |
+          set -e
+          echo "Checking if tag exists in ACR: $IMAGE_TAG"
+          if az acr repository show-tags --name "$REGISTRY_NAME" --repository product_service --output tsv | grep -q "^${IMAGE_TAG}$"; then
+            echo "resolved=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          else
+            echo "Tag not found in ACR, falling back to: latest"
+            echo "resolved=latest" >> $GITHUB_OUTPUT
+          fi
+
+      # use tag_check.outputs.resolved everywhere instead of compute_tag.outputs.val
+
+
+
+
       # Compute AKS name/RG (inputs override secrets)
       - name: Compute AKS values
         id: compute_aks
@@ -93,7 +113,7 @@ jobs:
       - name: Deploy Services (apply manifests and pin images)
         env:
           REGISTRY_LOGIN_SERVER: ${{ secrets.AZURE_ACR_LOGIN_SERVER }}
-          IMAGE_TAG: ${{ steps.compute_tag.outputs.val }}
+          IMAGE_TAG: ${{ steps.tag_check.outputs.resolved }}
         run: |
           kubectl apply -f k8s/product-service.yaml
           kubectl apply -f k8s/order-service.yaml
@@ -101,10 +121,9 @@ jobs:
           kubectl set image deploy/product-service-w08e1 product-service-container="${REGISTRY_LOGIN_SERVER}/product_service:${IMAGE_TAG}" --record=true || true
           kubectl set image deploy/order-service-w08e1   order-service-container="${REGISTRY_LOGIN_SERVER}/order_service:${IMAGE_TAG}"   --record=true || true
 
-          echo "Waiting for product-service rollout..."
-          kubectl rollout status deploy/product-service-w08e1 --timeout=600s || exit 1
-          echo "Waiting for order-service rollout..."
-          kubectl rollout status deploy/order-service-w08e1 --timeout=600s || exit 1
+          kubectl rollout status deploy/product-service-w08e1 --timeout=600s
+          kubectl rollout status deploy/order-service-w08e1   --timeout=600s
+
 
       - name: Debug (product-service) on failure
         if: failure()
