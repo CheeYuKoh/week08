@@ -61,7 +61,7 @@ jobs:
           echo "AKS_NAME=$NAME" >> $GITHUB_ENV
           echo "AKS_RG=$RG" >> $GITHUB_ENV
 
-      # Azure login (use v1 + AZURE_CREDENTIALS if you haven't set up OIDC yet)
+      # Azure login
       - name: Azure Login
         uses: azure/login@v1
         with:
