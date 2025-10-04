@@ -63,11 +63,6 @@ jobs:
             echo "resolved=latest" >> $GITHUB_OUTPUT
           fi
 
-      # use tag_check.outputs.resolved everywhere instead of compute_tag.outputs.val
-
-
-
-
       # Compute AKS name/RG (inputs override secrets)
       - name: Compute AKS values
         id: compute_aks
@@ -170,5 +165,3 @@ jobs:
       aks_resource_group: ${{ needs.deploy_backend.outputs.AKS_RG }}
       image_tag:        ${{ needs.deploy_backend.outputs.IMAGE_TAG }}
     secrets: inherit
-
-# update 
